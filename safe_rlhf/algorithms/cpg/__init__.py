@@ -12,12 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Trainer base classes."""
+"""The Constrained Policy Gradient algorithm."""
 
-from safe_rlhf.trainers.base import TrainerBase
-from safe_rlhf.trainers.rl_trainer import RLTrainer
-from safe_rlhf.trainers.supervised_trainer import SupervisedTrainer
-from safe_rlhf.trainers.ed_trainer import EDTrainer
+from safe_rlhf.algorithms.cpg.trainer import CPGTrainer
 
 
-__all__ = ['TrainerBase', 'RLTrainer', 'SupervisedTrainer']
+__all__ = ['CPG ddTrainer']

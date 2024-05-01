@@ -12,12 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Trainer base classes."""
+"""The main training script to run the CPG algorithm."""
 
-from safe_rlhf.trainers.base import TrainerBase
-from safe_rlhf.trainers.rl_trainer import RLTrainer
-from safe_rlhf.trainers.supervised_trainer import SupervisedTrainer
-from safe_rlhf.trainers.ed_trainer import EDTrainer
+import sys
 
+from safe_rlhf.algorithms.cpg.main import main
 
-__all__ = ['TrainerBase', 'RLTrainer', 'SupervisedTrainer']
+if __name__ == '__main__':
+    sys.exit(main())

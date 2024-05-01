@@ -101,6 +101,7 @@ class Logger:
                     self.writer = tensorboard.SummaryWriter(log_dir)
                 elif self.log_type == 'wandb':
                     self.wandb = wandb.init(
+                        entity="lishuo1-penn",
                         project=log_project,
                         name=log_run_name,
                         dir=log_dir,
