@@ -124,8 +124,14 @@ def parse_arguments() -> argparse.Namespace:
     training_parser.add_argument(
         '--kl_coeff',
         type=float,
-        default=0.02,
+        default=1.0,
         help='The coefficient for the KL divergence between the reference and actor policy.',
+    )
+    training_parser.add_argument(
+        '--b',
+        type=float,
+        default=0.0,
+        help='The upper bound for the expected episode cost.',
     )
     training_parser.add_argument(
         '--clip_range_ratio',

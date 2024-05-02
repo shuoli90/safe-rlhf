@@ -24,6 +24,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 from transformers import PreTrainedTokenizerBase
+import torch.nn.functional as F
 
 from safe_rlhf.models import AutoModelForScore, load_pretrained_models
 from safe_rlhf.trainers import EDTrainer
@@ -58,7 +59,7 @@ class CPGTrainer(EDTrainer):
             torch.tensor([0.0], device=self.args.device),
             requires_grad=True,
         )
-        self.lambda_optimizer = torch.optim.SGD([self.lamb], lr=self.args.lambda_lr)
+        self.lambda_optimizer = torch.optim.Adam([self.lamb], lr=self.args.lambda_lr)
         self.episode_costs = deque(maxlen=self.args.episode_cost_window_size)
 
     def init_models(self) -> None:
@@ -224,63 +225,31 @@ class CPGTrainer(EDTrainer):
         objective = reward + cost * self.lamb - self.kl_coeff * kl_divergence
         loss = objective * torch.sum(log_probs * mask, dim=-1)
         return -loss.mean()
-    
-    def lambda_loss_fn(
-        self,
-        reward: torch.Tensor,  # size = (B,)
-        cost: torch.Tensor,  # size = (B,)
-    ) -> torch.Tensor: # size = ()
-        objectives = (reward.squeeze(dim=-1) + cost @ self.lamb) / self.kl_coeff
-        objectives = torch.exp(objectives)
-        loss = torch.log(objectives[objectives.isinf() == False].mean())
-        return loss
-    
+
     def lambda_step(self, lambda_batch: dict[str, torch.Tensor]) -> dict[str, Any]:
-        prompt = torch.vstack([item['prompt'] for item in lambda_batch])
         reward = torch.vstack([item['reward'] for item in lambda_batch])
-        cost = torch.vstack([item['cost'] for item in lambda_batch])
-        attention_mask = torch.vstack([item['attention_mask'] for item in lambda_batch])
-
-        start = prompt[0].size(-1) - 1
-        sequence_mask = attention_mask[:, 1:]
-
-        lambda_loss = self.lambda_loss_fn(reward, cost)
+        cost = -torch.vstack([item['cost'] for item in lambda_batch])
+        objectives = (reward.squeeze(dim=-1) + cost @ self.lamb) / self.kl_coeff
+        objectives = F.softmax(objectives, dim=0)
+        gradient = objectives @ cost
         self.lambda_optimizer.zero_grad()
-        lambda_loss.backward()
+        self.lamb.grad = gradient
         self.lambda_optimizer.step()
+        self.lamb = torch.max(self.lamb, torch.tensor([0.0], device=self.args.device))
         dist.barrier()
-
-        with torch.no_grad():
-            mask = sequence_mask[:, start:]
-            mean_generated_length = mask.sum(dim=-1).float().mean()
-            max_generated_length = mask.sum(dim=-1).float().max()
-
-            reward = reward.mean()
-            cost = cost.mean()
-
-            lambda_loss = get_all_reduce_mean(lambda_loss)
-            reward = get_all_reduce_mean(reward)
-            cost = get_all_reduce_mean(cost)
-            mean_generated_length = get_all_reduce_mean(mean_generated_length)
-            max_generated_length = get_all_reduce_max(max_generated_length)
-
         return {
-            'train/lambda_loss': lambda_loss.item(),
             'train/lambda': self.lamb.item(),
-            'train/lambda_lr': self.lambda_optimizer.param_groups[0]['lr'],
         }
 
     # pylint: disable-next=too-many-locals
     def rl_step(self, rl_batch: dict[str, torch.Tensor]) -> dict[str, Any]:
         episode_cost = torch.tensor(self.episode_costs).mean().to(self.args.device)
-
         prompt = rl_batch['prompt']
         reward = rl_batch['reward']
         cost = rl_batch['cost']
         attention_mask = rl_batch['attention_mask']
         input_ids = rl_batch['input_ids']
         kl_divergence = rl_batch['kl_divergence']
-        
         start = prompt.size(-1) - 1
         sequence_mask = attention_mask[:, 1:]
         logits = self.actor_model(input_ids, attention_mask=attention_mask, use_cache=False).logits

@@ -329,8 +329,6 @@ class EDTrainer(TrainerBase):  # pylint: disable=too-many-instance-attributes
         total_batch_size = prompt_only_batch['input_ids'].size(0)
         micro_batches = []
         for i in range(0, total_batch_size):
-            # if i > 0:
-            #     break
             micro_batch = optree.tree_map(
                 # pylint: disable-next=cell-var-from-loop
                 lambda tensor: tensor[i : i + 1],  # noqa: B023
@@ -349,17 +347,12 @@ class EDTrainer(TrainerBase):  # pylint: disable=too-many-instance-attributes
         micro_batch_size = self.args.per_device_train_batch_size
         micro_batches = []
         for i in range(0, total_batch_size, micro_batch_size):
-            # if i > 0:
-            #     break
-            # try:
             micro_batch = optree.tree_map(
                 # pylint: disable-next=cell-var-from-loop
                 lambda tensor: tensor[i : i + micro_batch_size],  # noqa: B023
                 prompt_only_batch,
             )
             micro_batches.extend(self.rollout(micro_batch))
-            # except:
-            #     pass
         return micro_batches
 
     @torch.no_grad()
@@ -476,21 +469,25 @@ class EDTrainer(TrainerBase):  # pylint: disable=too-many-instance-attributes
             self.logger.print('\n***** Evaluating at the beginning *****')
             self.logger.log(self.eval(), step=0)
 
+        for prompt_only_batch in self.prompt_only_dataloader:
+            prompt_only_batch = to_device(prompt_only_batch, self.args.device)
+
+            # Step 2
+            lambda_batches = self.split_lambda_micro_batches(prompt_only_batch)
+            torch.cuda.empty_cache()
+            for lambda_batch in lambda_batches:
+                lambda_info = self.lambda_step(lambda_batch)
+                self.logger.log(lambda_info, step=self.global_step)
+                self.global_step += 1
+                torch.cuda.empty_cache()
+                print("Lambda value: ", lambda_info["train/lambda"])
+
+        print("*** lambda step done ***")
+        print("Lambda value: ", lambda_info["train/lambda"])
+
         for epoch in range(self.args.epochs):
             for prompt_only_batch in self.prompt_only_dataloader:
                 prompt_only_batch = to_device(prompt_only_batch, self.args.device)
-
-                # Step 2
-                lambda_batches = self.split_lambda_micro_batches(prompt_only_batch)
-                torch.cuda.empty_cache()
-                self.set_train()
-                for lambda_batch in lambda_batches:
-                    lambda_info = self.lambda_step(lambda_batch)
-                    torch.cuda.empty_cache()
-                    # self.logger.log(lambda_info, step=self.global_step)
-
-                print("*** lambda step done ***")
-                print("Lambda value: ", lambda_info["train/lambda"])
 
                 # Step 3
                 # generate batches
@@ -503,7 +500,6 @@ class EDTrainer(TrainerBase):  # pylint: disable=too-many-instance-attributes
                 self.set_train()
                 for rl_batch in rl_batches:
                     rl_info = self.rl_step(rl_batch)
-                    breakpoint()
                     torch.cuda.empty_cache()
                     self.logger.log(rl_info, step=self.global_step)
 
