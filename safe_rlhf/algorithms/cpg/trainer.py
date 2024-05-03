@@ -56,10 +56,12 @@ class CPGTrainer(EDTrainer):
 
         # Lagrange multiplier
         self.lamb = torch.nn.Parameter(
-            torch.tensor([0.0], device=self.args.device),
+            torch.tensor([0.5], device=self.args.device),
             requires_grad=True,
         )
-        self.lambda_optimizer = torch.optim.Adam([self.lamb], lr=self.args.lambda_lr)
+        # self.lambda_optimizer = torch.optim.SGD([self.lamb], lr=self.args.lambda_lr, momentum=0.9)
+        # self.lambda_scheduler = torch.optim.lr_scheduler.ExponentialLR(self.lambda_optimizer, gamma=0.9)
+        self.lambda_optimizer = torch.optim.Adagrad([self.lamb], lr=self.args.lambda_lr)
         self.episode_costs = deque(maxlen=self.args.episode_cost_window_size)
 
     def init_models(self) -> None:
