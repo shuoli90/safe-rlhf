@@ -154,7 +154,9 @@ class EDTrainer(TrainerBase):  # pylint: disable=too-many-instance-attributes
             padding_side='left',
             auto_model_type=AutoModelForCausalLM,
             trust_remote_code=self.args.trust_remote_code,
+            use_peft=True,
         )
+
         self.actor_reference_model, _ = load_pretrained_models(
             self.args.actor_model_name_or_path,
             model_max_length=self.args.max_length,
@@ -217,10 +219,11 @@ class EDTrainer(TrainerBase):  # pylint: disable=too-many-instance-attributes
         else:
             self.eval_dataloader = None
 
+        self.sampler= DistributedSampler(prompt_only_dataset, shuffle=True)
         self.prompt_only_dataloader = DataLoader(
             prompt_only_dataset,
             collate_fn=prompt_only_dataset.get_collator(),
-            sampler=DistributedSampler(prompt_only_dataset, shuffle=True),
+            sampler=self.sampler,
             batch_size=self.args.per_device_prompt_batch_size,
         )
 
@@ -229,7 +232,7 @@ class EDTrainer(TrainerBase):  # pylint: disable=too-many-instance-attributes
             * self.args.epochs
             * self.args.update_iters
             * self.args.per_device_prompt_batch_size
-            * self.args.num_return_sequences
+            * self.args.rl_num_return_sequences
             // self.args.per_device_train_batch_size,
         )
 
@@ -306,7 +309,7 @@ class EDTrainer(TrainerBase):  # pylint: disable=too-many-instance-attributes
         self.reward_model.eval()
 
         if self.args.actor_gradient_checkpointing:
-            self.actor_model.gradient_checkpointing_enable()
+            self.actor_model.module.gradient_checkpointing_enable()
 
     def set_train(self, mode: bool = True) -> None:
         """Set training mode for all models."""
@@ -314,12 +317,12 @@ class EDTrainer(TrainerBase):  # pylint: disable=too-many-instance-attributes
             self.actor_model.train()
 
             if self.args.actor_gradient_checkpointing:
-                self.actor_model.gradient_checkpointing_enable()
+                self.actor_model.module.gradient_checkpointing_enable()
         else:
             self.actor_model.eval()
 
             if self.args.actor_gradient_checkpointing:
-                self.actor_model.gradient_checkpointing_disable()
+                self.actor_model.module.gradient_checkpointing_disable()
 
     def split_lambda_micro_batches(
         self,
@@ -359,6 +362,7 @@ class EDTrainer(TrainerBase):  # pylint: disable=too-many-instance-attributes
     def rollout(self, prompt_only_batch: PromptOnlyBatch) -> list[dict[str, Any]]:
         """Rollout a batch of experiences."""
         input_ids = prompt_only_batch['input_ids']
+        # print(input_ids)
         sequences = self.actor_model.module.generate(
             input_ids=input_ids,
             attention_mask=prompt_only_batch['attention_mask'],
@@ -469,53 +473,58 @@ class EDTrainer(TrainerBase):  # pylint: disable=too-many-instance-attributes
             self.logger.print('\n***** Evaluating at the beginning *****')
             self.logger.log(self.eval(), step=0)
 
-        for prompt_only_batch in self.prompt_only_dataloader:
-            prompt_only_batch = to_device(prompt_only_batch, self.args.device)
+        # for prompt_only_batch in self.prompt_only_dataloader:
+        #     prompt_only_batch = to_device(prompt_only_batch, self.args.device)
 
-            # Step 2
-            lambda_batches = self.split_lambda_micro_batches(prompt_only_batch)
-            torch.cuda.empty_cache()
-            for lambda_batch in lambda_batches:
-                lambda_info = self.lambda_step(lambda_batch)
-                self.logger.log(lambda_info, step=self.global_step)
-                self.global_step += 1
-                torch.cuda.empty_cache()
-                print("Lambda value: ", lambda_info["train/lambda"])
+        #     # Step 2
+        #     lambda_batches = self.split_lambda_micro_batches(prompt_only_batch)
+        #     torch.cuda.empty_cache()
+        #     for lambda_batch in lambda_batches:
+        #         lambda_info = self.lambda_step(lambda_batch)
+        #         self.logger.log(lambda_info, step=self.global_step)
+        #         self.global_step += 1
+        #         torch.cuda.empty_cache()
+        #         print("Lambda value: ", lambda_info["train/lambda"])
 
-        print("*** lambda step done ***")
-        print("Lambda value: ", lambda_info["train/lambda"])
+        # print("*** lambda step done ***")
+        # print("Lambda value: ", lambda_info["train/lambda"])
 
         for epoch in range(self.args.epochs):
+            self.sampler.set_epoch(epoch)
             for prompt_only_batch in self.prompt_only_dataloader:
                 prompt_only_batch = to_device(prompt_only_batch, self.args.device)
 
                 # Step 3
                 # generate batches
-                # try:
                 rl_batches = self.split_rl_micro_batches(prompt_only_batch)
-                # except RuntimeError:
-                #     continue
-                torch.cuda.empty_cache()
 
                 self.set_train()
                 for rl_batch in rl_batches:
                     rl_info = self.rl_step(rl_batch)
-                    torch.cuda.empty_cache()
+                    # torch.cuda.empty_cache()
                     self.logger.log(rl_info, step=self.global_step)
 
-                    self.global_step += 1
                     progress_bar.set_description(
                         f'Training {epoch + 1}/{self.args.epochs} epoch '
                         f'(reward {rl_info["train/reward"]:.4f})',
                     )
                     progress_bar.update(1)
+                    self.global_step += 1
 
                     if self.global_step % self.args.save_interval == 0:
                         self.logger.print(f'Saving checkpoint at step {self.global_step} ...')
-                        self.actor_model.save_checkpoint(
-                            self.args.output_dir,
-                            tag=self.global_step,
-                        )
+                        if is_main_process():
+                            self.actor_model.save_checkpoint(
+                                self.args.output_dir,
+                                tag=self.global_step,
+                            )
+
+                        peft_dir = os.path.join(self.args.output_dir, "peft", str(self.global_step))
+                        os.makedirs(peft_dir, exist_ok=True)
+                        if is_main_process():
+                            model = self.actor_model.module.merge_and_unload() 
+                            model.save_pretrained(peft_dir, safe_serialization=True,)  
+
                         self.logger.print('Checkpoint saved.')
 
                     if (

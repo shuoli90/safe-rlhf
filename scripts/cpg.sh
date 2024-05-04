@@ -148,21 +148,21 @@ exec 1> >(tee "${OUTPUT_DIR}/stdout.log" >&1) 2> >(tee "${OUTPUT_DIR}/stderr.log
 deepspeed "${DEEPSPEED_ARGS[@]}" \
 	--master_port "${MASTER_PORT}" \
 	--module safe_rlhf.algorithms.cpg \
-	--train_datasets PKU-SafeRLHF/train \
+	--train_datasets PKU-SafeRLHF-30K/train \
 	--actor_model_name_or_path "${ACTOR_MODEL_NAME_OR_PATH}" \
 	--reward_model_name_or_path "${REWARD_MODEL_NAME_OR_PATH}" \
 	--cost_model_name_or_path "${COST_MODEL_NAME_OR_PATH}" \
 	--max_length 128 \
-	--temperature 1.2 \
+	--temperature 1.0 \
 	--num_return_sequences 32 \
 	--repetition_penalty 1.0 \
 	--trust_remote_code True \
-	--epochs 3 \
+	--epochs 15 \
 	--update_iters 1 \
-	--per_device_prompt_batch_size 2 \
-	--per_device_train_batch_size 1 \
-	--gradient_accumulation_steps 1 \
-	--actor_lr 1e-5 \
+	--per_device_prompt_batch_size 24 \
+	--per_device_train_batch_size 24 \
+	--gradient_accumulation_steps 3 \
+	--actor_lr 1e-4 \
 	--actor_weight_decay 0.01 \
 	--actor_lr_scheduler_type cosine \
 	--actor_lr_warmup_ratio 0.03 \
@@ -172,7 +172,7 @@ deepspeed "${DEEPSPEED_ARGS[@]}" \
 	--seed 42 \
 	--threshold 0.0 \
 	--lambda_init 1.0 \
-	--lambda_lr 0.1 \
+	--lambda_lr 0.01 \
 	--lambda_max 5.0 \
 	--episode_cost_window_size 128 \
 	--kl_coeff 0.01 \
@@ -181,7 +181,7 @@ deepspeed "${DEEPSPEED_ARGS[@]}" \
 	--clip_range_value 5.0 \
 	--output_dir "${OUTPUT_DIR}" \
 	--log_type wandb \
-	--log_project Safe-RLHF-PPO \
+	--log_project Safe-RLHF-CPG \
 	--zero_stage "${ZERO_STAGE}" \
 	--offload "${OFFLOAD}" \
 	--bf16 True \

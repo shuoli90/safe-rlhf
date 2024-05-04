@@ -56,7 +56,7 @@ class CPGTrainer(EDTrainer):
 
         # Lagrange multiplier
         self.lamb = torch.nn.Parameter(
-            torch.tensor([0.5], device=self.args.device),
+            torch.tensor([0.4], device=self.args.device),
             requires_grad=True,
         )
         # self.lambda_optimizer = torch.optim.SGD([self.lamb], lr=self.args.lambda_lr, momentum=0.9)
@@ -101,8 +101,10 @@ class CPGTrainer(EDTrainer):
     ) -> dict[str, Any]:
 
         valids = torch.any(attention_mask[:, 1:], dim=1)
+        prompt = prompt[valids]
         sequence = sequence[valids]
         attention_mask = attention_mask[valids]
+        start = prompt.size(-1) - 1
 
         if sequence.size(0) == 0:
             return {
@@ -148,13 +150,13 @@ class CPGTrainer(EDTrainer):
         cost = self.cost_model(cost_seq, attention_mask=cost_attention_mask).end_scores
 
         reward = reward.squeeze(dim=-1)
-        cost = cost.squeeze(dim=-1)
+        cost = -cost.squeeze(dim=-1)
 
         if probs:
             logits = self.actor_model(sequence, attention_mask=attention_mask).logits
             ref_logits = self.actor_reference_model(sequence, attention_mask=attention_mask).logits
-            log_probs = gather_log_probabilities(logits[:, :-1], sequence[:, 1:])
-            ref_log_probs = gather_log_probabilities(ref_logits[:, :-1], sequence[:, 1:])
+            log_probs = gather_log_probabilities(logits[:, start:-1], sequence[:, start+1:])
+            ref_log_probs = gather_log_probabilities(ref_logits[:, start:-1], sequence[:, start+1:])
             kl_divergence = torch.sum(log_probs - ref_log_probs, dim=-1)
 
         self.episode_costs.extend(cost.tolist())
@@ -230,7 +232,7 @@ class CPGTrainer(EDTrainer):
 
     def lambda_step(self, lambda_batch: dict[str, torch.Tensor]) -> dict[str, Any]:
         reward = torch.vstack([item['reward'] for item in lambda_batch])
-        cost = -torch.vstack([item['cost'] for item in lambda_batch])
+        cost = torch.vstack([item['cost'] for item in lambda_batch])
         objectives = (reward.squeeze(dim=-1) + cost @ self.lamb) / self.kl_coeff
         objectives = F.softmax(objectives, dim=0)
         gradient = objectives @ cost

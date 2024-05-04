@@ -29,6 +29,14 @@ from transformers import (
     PreTrainedModel,
     PreTrainedTokenizerBase,
 )
+from peft import LoraConfig, get_peft_model
+from peft.tuners.lora import LoraLayer
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    AutoTokenizer,
+    TrainingArguments,
+)
 from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
 
 from safe_rlhf.configs import (
@@ -145,6 +153,18 @@ def resize_tokenizer_embedding(tokenizer: PreTrainedTokenizerBase, model: PreTra
         ).format,
     )
 
+def find_all_linear_names(model):
+    cls = torch.nn.Linear
+    lora_module_names = set()
+    for name, module in model.named_modules():
+        if isinstance(module, cls):
+            names = name.split(".")
+            lora_module_names.add(names[0] if len(names) == 1 else names[-1])
+
+    if "lm_head" in lora_module_names:  # needed for 16-bit
+        lora_module_names.remove("lm_head")
+    return list(lora_module_names)
+
 
 def load_pretrained_models(  # pylint: disable=too-many-arguments
     model_name_or_path: str | os.PathLike,
@@ -161,6 +181,7 @@ def load_pretrained_models(  # pylint: disable=too-many-arguments
     auto_model_kwargs: dict[str, Any] | None = None,
     auto_tokenizer_args: tuple[Any, ...] = (),
     auto_tokenizer_kwargs: dict[str, Any] | None = None,
+    use_peft: bool = False,
 ) -> tuple[PreTrainedModel, PreTrainedTokenizerBase]:
     """Load pre-trained model and tokenizer from a given path.
 
@@ -193,6 +214,7 @@ def load_pretrained_models(  # pylint: disable=too-many-arguments
         device_map=device_map,
         torch_dtype=dtype,
         trust_remote_code=trust_remote_code,
+        # load_in_8bit=True,
         **auto_model_kwargs,
     )
     tokenizer = AutoTokenizer.from_pretrained(
@@ -204,5 +226,39 @@ def load_pretrained_models(  # pylint: disable=too-many-arguments
         trust_remote_code=trust_remote_code,
         **auto_tokenizer_kwargs,
     )
+
+    if use_peft:
+        # find all linear modules in model for lora
+        target_modules = find_all_linear_names(model)
+
+        # create lora config
+        peft_config = LoraConfig(
+            lora_alpha=16,
+            lora_dropout=0.05,
+            r=8,
+            bias="none",
+            task_type="CAUSAL_LM",
+            target_modules=target_modules,
+        )
+
+        # pre-process the model by upcasting the layer norms in float 32 for
+        # Adapted from https://github.com/tmm1/axolotl/blob/2eda9e02a9d15a7a3f92b41f257d9844d72fc220/src/axolotl/utils/models.py#L338
+        print("pre-processing model for peft")
+        for name, module in model.named_modules():
+            if isinstance(module, LoraLayer):
+                module = module.to(torch.bfloat16)
+            if "norm" in name:
+                module = module.to(torch.bfloat16)
+            if any(x in name for x in ["lm_head", "embed_tokens", "wte", "wpe"]):
+                if hasattr(module, "weight"):
+                    module = module.to(torch.bfloat16)
+
+        # initialize peft model
+        print("initializing peft model")
+        model = get_peft_model(model, peft_config)
+
+        # logger.info parameters
+        model.print_trainable_parameters()
+
     resize_tokenizer_embedding(tokenizer=tokenizer, model=model)
     return model, tokenizer
